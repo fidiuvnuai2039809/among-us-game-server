@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+ <title>Among Us Game Server</title>
+</head>
+
+<body>
+
+ <h1>Among Us Game Server</h1>
+
+ <input type="checkbox" id="imposterMode" checked disabled>Enable Imposter Mode</input>
+ </br>
+ <input type="checkbox" id="sheriffMode">Enable Sheriff Mode</input>
+ </br></br>
+
+ <label for="playersTable">Players Table:</label>
+
+ <table id="playersTable" border="2">
+  <th>Number</th>
+  <th>IP Address</th>
+  <th>RFID Address</th>
+  <th>Role</th>
+  <th>Alive</th>
+  <th>e-Meeting</th>
+  <th>Hit By</th>
+  <th>Ready</th>
+  <th>Online</th>
+ </table>
+ </br>
+
+ <p id="roomStatus"></p>
+ <!-- ##################################################################################################################################### -->
+ <script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-app.js";
+  import { getDatabase, ref, set, child, get, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-database.js";
+  export { onChildAdded, onChildChanged, onChildRemoved };
+  const firebaseConfig = {
+   apiKey: "AIzaSyBZzYf-bfhzF1VDo_aVYO0Rrl5QQ0CiPG4",
+   authDomain: "cpit490-project-among-us.firebaseapp.com",
+   projectId: "cpit490-project-among-us",
+   storageBucket: "cpit490-project-among-us.appspot.com",
+   messagingSenderId: "954943544298",
+   appId: "1:954943544298:web:1617af08db96512ad9f093"
+  };
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  const playersRefStr = "players/";
+  const playersRef = ref(db, playersRefStr);
+  const ledsRefStr = "/leds";
+
+  // class Player {
+  //  constructor(rfidAddress, role, alive, eMeeting, hitBy, timeMillis, ready, online) {
+  //   this.rfidAddress = rfidAddress;
+  //   this.role = role;
+  //   this.alive = alive;
+  //   this.eMeeting = eMeeting;
+  //   this.hitBy = hitBy;
+  //   this.timeMillis = timeMillis;
+  //   this.ready = ready;
+  //   this.online = online;
+  //  }
+  // }
+  let roomStatus = document.getElementById("roomStatus");
+  let playersTable = document.getElementById("playersTable");
+  let imposterMode = document.getElementById("imposterMode").checked;
+  let sheriffMode = document.getElementById("sheriffMode").checked;
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  let MIN_PLAYERS_LIMIT = 2;
+  //let TIMEOUT = 3000;
+
+  let feed;
+  let players = [];
+  let playersReadyToPlayNum = 0;
+  let playersDuringInitNum = 0;
+  let playersCompletedInitNum = 0;
+  let playersAssignedToRole = 0;
+  let inMeetingLoop = false;
+  let readyToPlayLoop = false;
+  let imposterPlayerSelected = false;
+  let sheriffPlayerSelected = false;
+  let inGame = false;
+  let inMeeting = false;
+
+  checkForChangeFB();
+
+  function checkForChangeFB() {
+
+   // check if existing player got removed
+   // ################################################### player removed listener ###################################################
+   onChildRemoved(playersRef, (removedPlayer) => {
+    let rfidAddress = removedPlayer.key;
+    console.log("player got removed: " + rfidAddress);
+
+    removeItemOnce(players, rfidAddress);
+   });
+
+   // check if a new player is entered
+   // ################################################### player added listener ###################################################
+   onChildAdded(playersRef, (newPlayer) => {
+    let rfidAddress = newPlayer.key;
+    console.log("player entered: " + rfidAddress);
+    players[playersDuringInitNum] = rfidAddress;
+    playersDuringInitNum++;
+    playersReadyToPlayNum++;
+
+    // ################################################### role listener DONE ###################################################
+    let refStr = (playersRefStr + rfidAddress + "/role");
+    onValue(ref(db, refStr), (snapshot) => {
+     const data = snapshot.val();
+     //if (playersDuringInitNum == playersCompletedInitNum) {
+     console.log("player: " + rfidAddress + " changed the field: " + "role" + " to: " + data);
+
+     inGameHandler();
+     roleHandlerFB(rfidAddress, data);
+     //}
+    });
+
+    // ################################################### alive listener DONE ###################################################
+    refStr = (playersRefStr + rfidAddress + "/alive");
+    onValue(ref(db, refStr), (snapshot) => {
+     let data = snapshot.val();
+     //if (playersDuringInitNum == playersCompletedInitNum) {
+     console.log("player: " + rfidAddress + " changed the field: " + "alive" + " to: " + data);
+
+     inGameHandler();
+     aliveHandlerFB(rfidAddress, data);
+
+     //}
+    });
+
+    // ################################################### eMeeting listener DONE ###################################################
+    refStr = (playersRefStr + rfidAddress + "/eMeeting");
+    onValue(ref(db, refStr), (snapshot) => {
+     let data = snapshot.val();
+     if (playersDuringInitNum == playersCompletedInitNum) {
+      console.log("player: " + rfidAddress + " changed the field: " + "eMeeting" + " to: " + data);
+
+      inGameHandler();
+      inMeetingHandlerFB(data, rfidAddress);
+
+     }
+    });
+
+    // ################################################### hitBy listener ###################################################
+    refStr = (playersRefStr + rfidAddress + "/hitBy");
+    onValue(ref(db, refStr), (snapshot) => {
+     let data = snapshot.val();
+     if (playersDuringInitNum == playersCompletedInitNum) {
+      console.log("player: " + rfidAddress + " changed the field: " + "hitBy" + " to: " + data);
+
+      inGameHandler();
+      hitHandlerFB(data, rfidAddress);
+     }
+    });
+
+    // ################################################### authServer listener UNUSED ###################################################
+    refStr = (playersRefStr + rfidAddress + "/authServer");
+    onValue(ref(db, refStr), (snapshot) => {
+     let data = snapshot.val();
+     if (playersDuringInitNum == playersCompletedInitNum)
+      console.log("player: " + rfidAddress + " changed the field: " + "authServer" + " to: " + data);
+    });
+
+    // ################################################### authClient listener UNUSED ###################################################
+    refStr = (playersRefStr + rfidAddress + "/authClient");
+    onValue(ref(db, refStr), (snapshot) => {
+     let data = snapshot.val();
+     if (playersDuringInitNum == playersCompletedInitNum)
+      console.log("player: " + rfidAddress + " changed the field: " + "authClient" + " to: " + data);
+    });
+
+    // ################################################### readyToPlay listener DONE ###################################################
+    refStr = (playersRefStr + rfidAddress + "/readyToPlay");
+    onValue(ref(db, refStr), (snapshot) => {
+     let data = snapshot.val();
+     //if (playersDuringInitNum == playersCompletedInitNum) {
+     //data ? playersReadyToPlayNum++ : playersReadyToPlayNum--;
+     console.log("player: " + rfidAddress + " changed the field: " + "readyToPlay" + " to: " + data);
+
+     inGameHandler();
+     readyToPlayHandlerFB(data);
+
+     // }
+    });
+
+    // ################################################### online listener DONE  ###################################################
+    refStr = (playersRefStr + "/" + rfidAddress + "/online");
+    onValue(ref(db, refStr), (snapshot) => {
+     let data = snapshot.val();
+     if (playersDuringInitNum == playersCompletedInitNum) {
+      console.log("player: " + rfidAddress + " changed the field: " + "online" + " to: " + data);
+
+      inGameHandler();
+      onlineHandlerFB(rfidAddress, data);
+     }
+    });
+    playersCompletedInitNum++;
+   });
+
+
+  }
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  function inMeetingHandlerFB(data, rfidAddress) {
+   console.log("function inMeetingHandlerFB(" + data + ")");
+
+   if (inGame) {
+    console.log("entered " + "function inMeetingHandlerFB(" + data + ")");
+
+    // get whether the player is alive or not
+    let alive;
+    let refStr = (playersRefStr + "/" + rfidAddress + "/alive");
+    get(ref(db, refStr)).then((snapshot) => {
+     if (snapshot.exists()) {
+      alive = snapshot.val();
+      console.log("player: " + rfidAddress + " alive: " + alive);
+
+      // if meeting triggerer is alive
+      if (alive) {
+
+       if (!inMeetingLoop) {
+        inMeetingLoop = true;
+        inMeeting = data;
+        for (let i = 0; i < players.length; i++) {
+
+         // update eMeeting vlaue
+         update(ref(db, playersRefStr + players[i]), {
+          eMeeting: inMeeting
+         });
+
+         // update blue_led_state value
+         update(ref(db, playersRefStr + players[i] + ledsRefStr), {
+          blue_led_state: inMeeting
+         });
+        }
+        inMeetingLoop = false;
+       }
+
+      } else if (!alive) { // if meeting triggerer is dead
+
+       // update eMeeting of the dead player to the global meeting value
+       update(ref(db, playersRefStr + rfidAddress), {
+        eMeeting: inMeeting
+       });
+      }
+     } else {
+      console.log("player: " + rfidAddress + " has no alive data available");
+     }
+    }).catch((error) => {
+     console.error(error);
+    });
+   }
+  }
+  //________________________________________________________________________________________________________________________________________
+  function aliveHandlerFB(rfidAddress, data) {
+   console.log("function aliveHandlerFB(" + rfidAddress + ", " + data + ")");
+
+   //if (inGame && !inMeeting) {
+   if (data) {
+    update(ref(db, playersRefStr + rfidAddress + ledsRefStr), {
+     red_led_state: false
+    });
+   } else if (!data) {
+    update(ref(db, playersRefStr + rfidAddress + ledsRefStr), {
+     red_led_state: true
+    });
+   }
+   //}
+  }
+  //________________________________________________________________________________________________________________________________________
+  function roleHandlerFB(rfidAddress, data) {
+   console.log("function roleHandlerFB(" + rfidAddress + ", " + data + ")");
+
+   //if (inGame)
+   if (data == "crewmate" || data == "null") {
+    update(ref(db, playersRefStr + rfidAddress + ledsRefStr), {
+     yellow_led_state: false,
+     green_led_state: false
+    });
+
+   } else if (data == "imposter") {
+    update(ref(db, playersRefStr + rfidAddress + ledsRefStr), {
+     yellow_led_state: true,
+     green_led_state: false
+    });
+
+   } else if (data == "sheriff") {
+    update(ref(db, playersRefStr + rfidAddress + ledsRefStr), {
+     yellow_led_state: false,
+     green_led_state: true
+    });
+   }
+  }
+  //________________________________________________________________________________________________________________________________________
+  function onlineHandlerFB(rfidAddress, data) {
+   console.log("function onlineHandlerFB(" + rfidAddress + ", " + data + ")");
+
+   // if player is offline, get the role of the player in order to empty the role slot and delete him
+   if (!data) {
+    console.log("entered function onlineHandlerFB(" + rfidAddress + ", " + data + ")");
+
+    let role;
+    let refStr = (playersRefStr + "/" + rfidAddress + "/role");
+    get(ref(db, refStr)).then((snapshot) => {
+     if (snapshot.exists()) {
+      role = snapshot.val();
+      console.log("player: " + rfidAddress + " online: " + data + " role: " + role);
+
+      // empty the role slot
+      if (role == "imposter") {
+       imposterPlayerSelected = false;
+      } else if (role == "sheriff") {
+       sheriffPlayerSelected = false;
+      }
+
+      // update readyToPlay to false in order to keep track of playersReadyToPlayNum
+      update(ref(db, playersRefStr + rfidAddress), {
+       readyToPlay: false
+      });
+
+      // delete him
+      //refStr = (playersRefStr + "/" + rfidAddress);
+      remove(ref(db, (playersRefStr + rfidAddress)));
+
+     } else {
+      console.log("player: " + rfidAddress + " online: " + data + " has no role data available");
+     }
+    }).catch((error) => {
+     console.error(error);
+    });
+   }
+
+  }
+  //________________________________________________________________________________________________________________________________________
+  function readyToPlayHandlerFB(data) {
+   console.log("function readyToPlayHandlerFB()");
+
+   // keep track of playersReadyToPlayNum
+   // if (data) {
+   //  playersReadyToPlayNum++;
+   // } else if (!data) {
+   //  playersReadyToPlayNum--;
+   // }
+
+   // if inGame and readyToPlay is true
+   if (inGame && data) {
+    console.log("entered function readyToPlayHandlerFB()");
+
+    if (!readyToPlayLoop) {
+     console.log("entered function LOOP readyToPlayHandlerFB()");
+     readyToPlayLoop = true;
+
+     let rolelessPlayers = [];
+
+     for (let i = 0; i < players.length; i++) {
+
+      // get role and readyToPlay
+      let role;
+      let readyToPlay;
+      let refStr = (playersRefStr + "/" + players[i] + "/role");
+      get(ref(db, refStr)).then((snapshot) => {
+       if (snapshot.exists()) {
+        role = snapshot.val();
+        console.log("GET player: " + players[i] + " role: " + role);
+        //---
+        refStr = (playersRefStr + "/" + players[i] + "/readyToPlay");
+        get(ref(db, refStr)).then((snapshot) => {
+         if (snapshot.exists()) {
+          readyToPlay = snapshot.val();
+          console.log("GET player: " + players[i] + " readyToPlay: " + readyToPlay);
+          //---
+
+          // // fill the role slot if a slot is already assigned to player
+          // if (role == "imposter") {
+          //  console.log("function readyToPlayHandlerFB() if imposter");
+          //  imposterPlayerSelected = true;
+          // } else if (role == "sheriff") {
+          //  console.log("function readyToPlayHandlerFB() if sheriff");
+          //  sheriffPlayerSelected = true;
+          // } else if (role == "null") {  // if player is readyToPlay and has no role, randomize a new role
+          //  console.log("function readyToPlayHandlerFB() if roleless");
+          //  rolelessPlayers.push(players[i]);
+          // }
+
+          if (role == "null") {  // if player is readyToPlay and has no role, randomize a new role
+           console.log("function readyToPlayHandlerFB() if roleless, the player: " + players[i]);
+           rolelessPlayers.push(players[i]);
+          }
+
+          // if i loop completed, randomize all roleless players
+          if (i == players.length - 1) {
+
+           c("rolelessPlayers length: " + rolelessPlayers.length);
+           // randomize a role to all roleless players
+           for (let j = 0; j < rolelessPlayers.length; j++) {
+
+            // randomize a role
+            let randomNum = randomIntFromInterval(0, rolelessPlayers.length - j - 1);
+            update(ref(db, playersRefStr + rolelessPlayers[randomNum]), {
+             role: roleRandomizer()
+            });
+            removeItemOnce(rolelessPlayers, rolelessPlayers[randomNum]);
+            j--;
+           } // end of j loop
+          }
+
+          //---
+         } else {
+          console.log("GET player: " + players[i] + " has no readyToPlay data available");
+         }
+        }).catch((error) => {
+         console.error(error);
+        });
+        //---
+       } else {
+        console.log("GET player: " + players[i] + " has no role data available");
+       }
+      }).catch((error) => {
+       console.error(error);
+      });
+
+     } // end of i loop
+     readyToPlayLoop = false;
+    }
+   }
+  }
+  // while (readyToPlayLoop) {
+
+  //  readyToPlayLoopIndex++;
+  //  let i = readyToPlayLoopIndex - 1;
+  //  let rolelessPlayers = [];
+
+  //  // get role and readyToPlay
+  //  let role;
+  //  let readyToPlay;
+  //  let refStr = (playersRefStr + "/" + players[i] + "/role");
+  //  get(ref(db, refStr)).then((snapshot) => {
+  //   if (snapshot.exists()) {
+  //    role = snapshot.val();
+  //    console.log("GET player: " + players[i] + " role: " + role);
+  //   } else {
+  //    console.log("GET player: " + players[i] + " has no role data available");
+  //   }
+  //  }).catch((error) => {
+  //   console.error(error);
+  //  });
+  //  refStr = (playersRefStr + "/" + players[i] + "/readyToPlay");
+  //  get(ref(db, refStr)).then((snapshot) => {
+  //   if (snapshot.exists()) {
+  //    readyToPlay = snapshot.val();
+  //    console.log("GET player: " + players[i] + " readyToPlay: " + readyToPlay);
+  //   } else {
+  //    console.log("GET player: " + players[i] + " has no readyToPlay data available");
+  //   }
+  //  }).catch((error) => {
+  //   console.error(error);
+  //  });
+
+  //  // if player is readyToPlay and has no role, randomize a new role
+  //  if (readyToPlay && role == "null") {
+
+  //   rolelessPlayers.push(players[i]);
+  //  }
+
+  //  // if loop iterated through all players
+  //  if (readyToPlayLoopIndex > players.length) {
+
+  //   // randomize a role to all roleless players
+  //   for (let j = 0; j < rolelessPlayers.length; j++) {
+
+  //    // randomize a role
+  //    let randomNum = randomIntFromInterval(0, rolelessPlayers.length);
+  //    update(ref(db, playersRefStr + rolelessPlayers[randomNum]), {
+  //     role: roleRandomizer()
+  //    });
+  //    removeItemOnce(rolelessPlayers, rolelessPlayers[randomNum]);
+  //   }
+  //   readyToPlayLoop = false;
+  //   readyToPlayLoopIndex = 0;
+  //  }
+  // } //end of loop
+  //________________________________________________________________________________________________________________________________________
+  function inGameHandler() {
+   console.log("function inGameHandler()");
+   //console.log("number of players: " + players.length + " number of ready players: " + playersReadyToPlayNum);
+
+   if (players.length < MIN_PLAYERS_LIMIT || playersReadyToPlayNum < players.length) {
+    inGame = false;
+
+   } else if (players.length >= MIN_PLAYERS_LIMIT && playersReadyToPlayNum >= MIN_PLAYERS_LIMIT) {
+    inGame = true;
+   }
+   console.log("inGame: " + inGame);
+
+   let line1 = "Players Joined: " + players.length + "<br>";
+   let line2 = ((MIN_PLAYERS_LIMIT - players.length) > 0 ? ("Players Remaining: " + (MIN_PLAYERS_LIMIT - players.length) + "<br>") : "");
+   let line3 = "Players Ready: " + playersReadyToPlayNum + "<br><br>";
+   let line4 = (inGame ? "Game Started!" : "Waiting...");
+
+   feed = line1 + line2 + line3 + line4;
+   console.log(line4);
+   roomStatus.innerHTML = feed;
+
+   // // get readyToPlay value from all players
+   // let playersReadyToPlayNum = 0;
+   // for (let i = 0; i < players.length; i++) {
+   //  let readyToPlay;
+   //  let refStr = (playersRefStr + "/" + players[i] + "/readyToPlay");
+   //  get(ref(db, refStr)).then((snapshot) => {
+   //   if (snapshot.exists()) {
+   //    readyToPlay = snapshot.val();
+   //    console.log("GET player: " + players[i] + " readyToPlay: " + readyToPlay);
+
+   //    if (readyToPlay) {
+   //     playersReadyToPlayNum++;
+   //    }
+
+   //   } else {
+   //    console.log("GET player: " + players[i] + " has no readyToPlay data available");
+   //   }
+   //  }).catch((error) => {
+   //   console.error(error);
+   //  });
+
+   // }
+  }
+  //________________________________________________________________________________________________________________________________________
+  function hitHandlerFB(cardPlayer, deckPlayer) {
+   console.log("function hitHandlerFB(" + cardPlayer + ", " + deckPlayer + ")");
+
+   if (inGame && !inMeeting) {
+
+    // get the roles of deckPlayer and cardPlayer
+    let cardPlayerRole;
+    let deckPlayerRole;
+    let cardPlayerAlive;
+    let deckPlayerAlive;
+    let refStr = (playersRefStr + cardPlayer + "/role");
+    get(ref(db, refStr)).then((snapshot) => {
+     if (snapshot.exists()) {
+      cardPlayerRole = snapshot.val();
+      console.log("GET player: " + cardPlayer + " role: " + cardPlayerRole);
+      // ---
+
+      refStr = (playersRefStr + deckPlayer + "/role");
+      get(ref(db, refStr)).then((snapshot) => {
+       if (snapshot.exists()) {
+        deckPlayerRole = snapshot.val();
+        console.log("GET player: " + deckPlayer + " role: " + deckPlayerRole);
+        // ---
+
+        // get alive value of deckPlayer and cardPlayer
+        refStr = (playersRefStr + cardPlayer + "/alive");
+        get(ref(db, refStr)).then((snapshot) => {
+         if (snapshot.exists()) {
+          cardPlayerAlive = snapshot.val();
+          console.log("GET player: " + cardPlayer + " alive: " + cardPlayerAlive);
+          // ---
+
+          refStr = (playersRefStr + deckPlayer + "/alive");
+          get(ref(db, refStr)).then((snapshot) => {
+           if (snapshot.exists()) {
+            deckPlayerAlive = snapshot.val();
+            console.log("GET player: " + deckPlayer + " alive: " + deckPlayerAlive);
+            // ---
+
+            // handle the hit
+            if (cardPlayerAlive && deckPlayerAlive) {
+
+             if (cardPlayerRole == "imposter" && deckPlayerRole == "crewmate") {
+              console.log("player: " + cardPlayer + "(" + cardPlayerRole + ")" + " killed: " + deckPlayer + "(" + deckPlayerRole + ")");
+
+              // kill deckPlayer
+              refStr = (playersRefStr + deckPlayer);
+              update(ref(db, refStr), {
+               alive: false
+              });
+
+             } else if (cardPlayerRole == "sheriff" && deckPlayerRole == "imposter") {
+              console.log("player: " + cardPlayer + "(" + cardPlayerRole + ")" + " killed: " + deckPlayer + "(" + deckPlayerRole + ")");
+
+              // kill deckPlayer
+              refStr = (playersRefStr + deckPlayer);
+              update(ref(db, refStr), {
+               alive: false
+              });
+
+             } else if (cardPlayerRole == "sheriff" && deckPlayerRole == "crewmate") {
+              console.log("player: " + cardPlayer + "(" + cardPlayerRole + ")" + " killed himself due to a wrong decision with: " + deckPlayer + "(" + deckPlayerRole + ")");
+
+              // kill cardPlayer
+              refStr = (playersRefStr + deckPlayer);
+              update(ref(db, refStr), {
+               alive: false
+              });
+             } else {
+              console.log("player: " + cardPlayer + "(" + cardPlayerRole + ")" + " brushed up against: " + deckPlayer + "(" + deckPlayerRole + ")" + " and nothing happened...");
+             }
+
+            }
+
+            // ---
+           } else {
+            console.log("GET player: " + deckPlayer + " has no alive data available");
+           }
+          }).catch((error) => {
+           console.error(error);
+          });
+
+          // ---
+         } else {
+          console.log("GET player: " + cardPlayer + " has no alive data available");
+         }
+        }).catch((error) => {
+         console.error(error);
+        });
+
+        // ---
+       } else {
+        console.log("GET player: " + deckPlayer + " has no role data available");
+       }
+      }).catch((error) => {
+       console.error(error);
+      });
+
+      // ---
+     } else {
+      console.log("GET player: " + cardPlayer + " has no role data available");
+     }
+    }).catch((error) => {
+     console.error(error);
+    });
+   }
+  }
+  //________________________________________________________________________________________________________________________________________
+  function searchForPlayerRFID(rfid) {
+
+   for (let i = 0; i < players.length; i++) {
+    if (players[i].rfidAddress == rfid) {
+     return players[i];
+    }
+   }
+   return null;
+  }
+  //________________________________________________________________________________________________________________________________________
+  function roleRandomizer() {
+   console.log("function roleRandomizer()");
+
+   if (imposterMode && !imposterPlayerSelected) {
+    console.log("function roleRandomizer() = if imposter");
+
+    imposterPlayerSelected = true;
+    return "imposter";
+
+   } else if (sheriffMode && !sheriffPlayerSelected) {
+    console.log("function roleRandomizer() = if sheriff");
+
+    sheriffPlayerSelected = true;
+    return "sheriff";
+
+   } else {
+    console.log("function roleRandomizer() = if crewmate");
+    return "crewmate";
+   }
+  }
+  //________________________________________________________________________________________________________________________________________
+  function playersTableUpdate() {
+
+   let row = playersTable.insertRow(players.length + 1);
+   let cell1 = row.insertCell(0);
+   let cell2 = row.insertCell(1);
+   let cell3 = row.insertCell(2);
+   let cell4 = row.insertCell(3);
+   let cell5 = row.insertCell(4);
+   cell1.innerHTML = "abc";
+  }
+  //________________________________________________________________________________________________________________________________________
+  function removeItemOnce(arr, value) {
+   var index = arr.indexOf(value);
+   if (index > -1) {
+    arr.splice(index, 1);
+   }
+   return arr;
+  }
+  //________________________________________________________________________________________________________________________________________
+  function randomIntFromInterval(min, max) {
+   console.log("function randomIntFromInterval(" + min + ", " + max + ")");
+
+   return Math.floor(Math.random() * (max - min + 1) + min)
+  }
+
+  function c(str) {
+   console.log(str);
+  }
+
+ </script>
+
+</body>
+
+</html>
